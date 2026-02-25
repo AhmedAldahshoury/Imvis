@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Syno Photo Graph</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <style>
+    body { margin: 0; font-family: Arial, sans-serif; display: grid; grid-template-columns: 1fr 320px; height: 100vh; }
+    #graph-wrap { display: flex; flex-direction: column; }
+    #toolbar { padding: 10px; border-bottom: 1px solid #ddd; display:flex; gap:8px; align-items:center; }
+    #graph { flex:1; width:100%; height:100%; background:#fafafa; }
+    #side { border-left:1px solid #ddd; padding: 10px; overflow:auto; }
+    #status { font-size:12px; color:#555; }
+    .node img { pointer-events: none; }
+  </style>
+</head>
+<body>
+  <div id="graph-wrap">
+    <div id="toolbar">
+      <button id="reindex">Reindex</button>
+      <label>Min similarity <input id="threshold" type="range" min="0" max="1" step="0.01" value="0"/></label>
+      <span id="thresholdValue">0.00</span>
+      <input id="search" placeholder="Search filename" />
+      <span id="status">Loading...</span>
+    </div>
+    <svg id="graph"></svg>
+  </div>
+  <aside id="side">
+    <h3>Selection</h3>
+    <div id="details">Click a node</div>
+  </aside>
+<script>
+const svg = d3.select('#graph');
+const width = window.innerWidth - 320;
+const height = window.innerHeight - 60;
+svg.attr('viewBox', `0 0 ${width} ${height}`);
+let graph = {nodes: [], edges: []};
+let nodesById = new Map();
+let simThreshold = 0;
+
+async function fetchGraph() {
+  const r = await fetch('/api/graph?limit=1000&min_sim=0');
+  graph = await r.json();
+  nodesById = new Map(graph.nodes.map(n => [n.id, n]));
+  draw();
+}
+
+async function pollStatus() {
+  const r = await fetch('/api/status');
+  const s = await r.json();
+  document.getElementById('status').textContent = `${s.stage} ${s.progress_current}/${s.progress_total} | imgs:${s.images} emb:${s.embeddings} edges:${s.edges}`;
+  if (!s.running && s.images > 0) {
+    fetchGraph();
+  }
+}
+setInterval(pollStatus, 1500);
+
+function draw() {
+  svg.selectAll('*').remove();
+  const filteredEdges = graph.edges.filter(e => e.similarity >= simThreshold);
+  const linked = new Set(filteredEdges.flatMap(e => [e.src_id, e.dst_id]));
+  const filteredNodes = graph.nodes.filter(n => linked.has(n.id) || graph.nodes.length < 20);
+
+  const sim = d3.forceSimulation(filteredNodes)
+      .force('link', d3.forceLink(filteredEdges).id(d => d.id).distance(d => 180 - d.similarity * 120).strength(0.5))
+      .force('charge', d3.forceManyBody().strength(-120))
+      .force('center', d3.forceCenter(width / 2, height / 2));
+
+  const link = svg.append('g').selectAll('line')
+      .data(filteredEdges)
+      .enter().append('line')
+      .attr('stroke', '#888')
+      .attr('stroke-opacity', d => Math.max(0.1, d.similarity))
+      .attr('stroke-width', d => 0.5 + d.similarity * 3);
+
+  const node = svg.append('g').selectAll('g')
+      .data(filteredNodes)
+      .enter().append('g')
+      .call(d3.drag()
+        .on('start', dragstarted)
+        .on('drag', dragged)
+        .on('end', dragended));
+
+  node.append('clipPath').attr('id', d => `clip-${d.id}`).append('circle').attr('r', 18);
+  node.append('image')
+      .attr('href', d => `/thumbs/${d.id}.jpg`)
+      .attr('x', -18).attr('y', -18).attr('width', 36).attr('height', 36)
+      .attr('clip-path', d => `url(#clip-${d.id})`);
+  node.append('circle').attr('r', 18).attr('fill', 'none').attr('stroke', '#fff').attr('stroke-width', 2);
+
+  node.on('click', (_, d) => showDetails(d));
+
+  sim.on('tick', () => {
+    link
+      .attr('x1', d => d.source.x)
+      .attr('y1', d => d.source.y)
+      .attr('x2', d => d.target.x)
+      .attr('y2', d => d.target.y);
+
+    node.attr('transform', d => `translate(${d.x},${d.y})`);
+  });
+
+  function dragstarted(event) { if (!event.active) sim.alphaTarget(0.3).restart(); event.subject.fx = event.subject.x; event.subject.fy = event.subject.y; }
+  function dragged(event) { event.subject.fx = event.x; event.subject.fy = event.y; }
+  function dragended(event) { if (!event.active) sim.alphaTarget(0); event.subject.fx = null; event.subject.fy = null; }
+}
+
+function showDetails(node) {
+  const neigh = graph.edges
+    .filter(e => e.src_id === node.id || e.dst_id === node.id)
+    .map(e => ({id: e.src_id === node.id ? e.dst_id : e.src_id, similarity: e.similarity}))
+    .sort((a,b) => b.similarity-a.similarity)
+    .slice(0, 12);
+
+  const items = neigh.map(n => `<li>${nodesById.get(n.id)?.filename || n.id} (${n.similarity.toFixed(3)})</li>`).join('');
+  document.getElementById('details').innerHTML = `
+    <h4>${node.filename}</h4>
+    <img src="/image/${node.id}?max_dim=512" style="max-width:100%; border-radius:8px" />
+    <h5>Top neighbours</h5>
+    <ol>${items}</ol>
+  `;
+}
+
+document.getElementById('threshold').addEventListener('input', e => {
+  simThreshold = parseFloat(e.target.value);
+  document.getElementById('thresholdValue').textContent = simThreshold.toFixed(2);
+  draw();
+});
+
+document.getElementById('search').addEventListener('input', e => {
+  const q = e.target.value.toLowerCase();
+  svg.selectAll('g').attr('opacity', d => !q || d.filename.toLowerCase().includes(q) ? 1 : 0.15);
+});
+
+document.getElementById('reindex').addEventListener('click', async () => {
+  await fetch('/api/reindex', {method:'POST'});
+  pollStatus();
+});
+
+pollStatus();
+fetchGraph();
+</script>
+</body>
+</html>

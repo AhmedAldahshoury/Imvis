@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+app_data/*
+!app_data/.gitkeep
+sample_images/*.jpg
+sample_images/*.jpeg
+sample_images/*.png
+sample_images/*.webp
