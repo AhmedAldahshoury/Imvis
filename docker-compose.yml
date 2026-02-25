@@ -1,0 +1,11 @@
+services:
+  syno-photo-graph:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - IMAGE_DIR=/data/images
+      - DATA_DIR=/data
+    volumes:
+      - ./sample_images:/data/images
+      - ./app_data:/data
