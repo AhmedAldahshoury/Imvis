@@ -15,6 +15,45 @@ from app.embeddings import Embedder, topk_cosine_graph
 from app.scanner import discover_images
 
 
+def project_vectors_2d(vectors: np.ndarray) -> np.ndarray:
+    """Project embedding vectors to a stable 2D coordinate system via PCA."""
+    if vectors.shape[0] == 0:
+        return np.empty((0, 2), dtype=np.float32)
+    centered = vectors - vectors.mean(axis=0, keepdims=True)
+    if centered.shape[0] == 1:
+        return np.zeros((1, 2), dtype=np.float32)
+    _, _, vh = np.linalg.svd(centered, full_matrices=False)
+    basis = vh[:2].T
+    if basis.shape[1] < 2:
+        basis = np.pad(basis, ((0, 0), (0, 2 - basis.shape[1])))
+    projected = centered @ basis
+    scale = np.max(np.abs(projected), axis=0)
+    scale[scale == 0] = 1.0
+    return (projected / scale).astype(np.float32)
+
+
+def kmeans_labels(points: np.ndarray, k: int, iterations: int = 12) -> np.ndarray:
+    if len(points) == 0:
+        return np.empty(0, dtype=np.int32)
+    k = max(1, min(k, len(points)))
+    if k == 1:
+        return np.zeros(len(points), dtype=np.int32)
+
+    centroids = points[np.linspace(0, len(points) - 1, num=k, dtype=int)].copy()
+    labels = np.zeros(len(points), dtype=np.int32)
+    for _ in range(iterations):
+        distances = ((points[:, None, :] - centroids[None, :, :]) ** 2).sum(axis=2)
+        new_labels = np.argmin(distances, axis=1).astype(np.int32)
+        if np.array_equal(labels, new_labels):
+            break
+        labels = new_labels
+        for idx in range(k):
+            members = points[labels == idx]
+            if len(members):
+                centroids[idx] = members.mean(axis=0)
+    return labels
+
+
 @dataclass
 class IndexStatus:
     running: bool = False
@@ -92,10 +131,23 @@ class Indexer:
             if vectors:
                 matrix = np.vstack(vectors).astype(np.float32)
                 edges = topk_cosine_graph(ids, matrix, top_k=self.settings.top_k)
+                projected = project_vectors_2d(matrix)
+                target_clusters = int(np.clip(np.sqrt(len(ids) / 2), 2, 8)) if len(ids) >= 6 else 1
+                labels = kmeans_labels(projected, target_clusters)
+                layout = {
+                    image_id: {
+                        "x": float(projected[i, 0]),
+                        "y": float(projected[i, 1]),
+                        "cluster": int(labels[i]),
+                    }
+                    for i, image_id in enumerate(ids)
+                }
             else:
                 edges = []
+                layout = {}
             self.db.clear_edges()
             self.db.insert_edges(edges)
+            self.db.set_metadata("layout", layout)
 
             payload = self.db.graph(limit=self.settings.default_limit, min_sim=0.0)
             cache_file = self.settings.cache_dir / "graph_cache.json"

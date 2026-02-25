@@ -131,6 +131,15 @@ class Database:
         node_ids = [n["id"] for n in nodes]
         if not node_ids:
             return {"nodes": [], "edges": []}
+        layout = self.get_metadata("layout", {})
+        node_payload = []
+        for row in nodes:
+            data = dict(row)
+            item_layout = layout.get(row["id"], {}) if isinstance(layout, dict) else {}
+            data["x"] = float(item_layout.get("x", 0.0))
+            data["y"] = float(item_layout.get("y", 0.0))
+            data["cluster"] = int(item_layout.get("cluster", -1))
+            node_payload.append(data)
         placeholders = ",".join("?" for _ in node_ids)
         edges = self.conn.execute(
             f"""
@@ -143,6 +152,6 @@ class Database:
             [min_sim, *node_ids, *node_ids],
         ).fetchall()
         return {
-            "nodes": [dict(n) for n in nodes],
+            "nodes": node_payload,
             "edges": [dict(e) for e in edges],
         }
