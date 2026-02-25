@@ -38,27 +38,47 @@ svg.attr('viewBox', `0 0 ${width} ${height}`);
 let graph = {nodes: [], edges: []};
 let nodesById = new Map();
 let simThreshold = 0;
-let lastGraphSignature = '';
+let lastLoadedGraphSignature = '';
+let isFetchingGraph = false;
+let wasRunning = false;
 
 function graphSignatureFromStatus(status) {
-  return `${status.images}:${status.embeddings}:${status.edges}:${status.running}`;
+  return `${status.images}:${status.embeddings}:${status.edges}`;
 }
 
-async function fetchGraph() {
-  const r = await fetch('/api/graph?limit=1000&min_sim=0');
-  graph = await r.json();
-  nodesById = new Map(graph.nodes.map(n => [n.id, n]));
-  draw();
+async function fetchGraph(signature = '') {
+  if (isFetchingGraph) return;
+  isFetchingGraph = true;
+  try {
+    const r = await fetch('/api/graph?limit=1000&min_sim=0');
+    graph = await r.json();
+    nodesById = new Map(graph.nodes.map(n => [n.id, n]));
+    if (signature) {
+      lastLoadedGraphSignature = signature;
+    }
+    draw();
+  } finally {
+    isFetchingGraph = false;
+  }
 }
 
 async function pollStatus() {
   const r = await fetch('/api/status');
   const s = await r.json();
   document.getElementById('status').textContent = `${s.stage} ${s.progress_current}/${s.progress_total} | imgs:${s.images} emb:${s.embeddings} edges:${s.edges}`;
+
+  if (s.running) {
+    wasRunning = true;
+    return;
+  }
+
   const nextSig = graphSignatureFromStatus(s);
-  if (!s.running && s.images > 0 && nextSig !== lastGraphSignature) {
-    lastGraphSignature = nextSig;
-    fetchGraph();
+  const hasGraphData = graph.nodes.length > 0 || graph.edges.length > 0;
+  const shouldFetch = s.images > 0 && (!hasGraphData || wasRunning || nextSig !== lastLoadedGraphSignature);
+  wasRunning = false;
+
+  if (shouldFetch) {
+    await fetchGraph(nextSig);
   }
 }
 setInterval(pollStatus, 1500);
