@@ -38,6 +38,11 @@ svg.attr('viewBox', `0 0 ${width} ${height}`);
 let graph = {nodes: [], edges: []};
 let nodesById = new Map();
 let simThreshold = 0;
+let lastGraphSignature = '';
+
+function graphSignatureFromStatus(status) {
+  return `${status.images}:${status.embeddings}:${status.edges}:${status.running}`;
+}
 
 async function fetchGraph() {
   const r = await fetch('/api/graph?limit=1000&min_sim=0');
@@ -50,7 +55,9 @@ async function pollStatus() {
   const r = await fetch('/api/status');
   const s = await r.json();
   document.getElementById('status').textContent = `${s.stage} ${s.progress_current}/${s.progress_total} | imgs:${s.images} emb:${s.embeddings} edges:${s.edges}`;
-  if (!s.running && s.images > 0) {
+  const nextSig = graphSignatureFromStatus(s);
+  if (!s.running && s.images > 0 && nextSig !== lastGraphSignature) {
+    lastGraphSignature = nextSig;
     fetchGraph();
   }
 }
@@ -61,8 +68,9 @@ function draw() {
   const filteredEdges = graph.edges.filter(e => e.similarity >= simThreshold);
   const linked = new Set(filteredEdges.flatMap(e => [e.src_id, e.dst_id]));
   const filteredNodes = graph.nodes.filter(n => linked.has(n.id) || graph.nodes.length < 20);
+  const nodesToDraw = filteredNodes.length > 0 ? filteredNodes : graph.nodes.slice(0, Math.min(graph.nodes.length, 120));
 
-  const sim = d3.forceSimulation(filteredNodes)
+  const sim = d3.forceSimulation(nodesToDraw)
       .force('link', d3.forceLink(filteredEdges).id(d => d.id).distance(d => 180 - d.similarity * 120).strength(0.5))
       .force('charge', d3.forceManyBody().strength(-120))
       .force('center', d3.forceCenter(width / 2, height / 2));
@@ -75,7 +83,7 @@ function draw() {
       .attr('stroke-width', d => 0.5 + d.similarity * 3);
 
   const node = svg.append('g').selectAll('g')
-      .data(filteredNodes)
+      .data(nodesToDraw)
       .enter().append('g')
       .call(d3.drag()
         .on('start', dragstarted)
@@ -139,7 +147,6 @@ document.getElementById('reindex').addEventListener('click', async () => {
 });
 
 pollStatus();
-fetchGraph();
 </script>
 </body>
 </html>
