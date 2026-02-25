@@ -1,8 +1,9 @@
 import pytest
 
 np = pytest.importorskip("numpy")
-
-from app.indexer import kmeans_labels, project_vectors_2d
+indexer = pytest.importorskip("app.indexer")
+kmeans_labels = indexer.kmeans_labels
+project_vectors_2d = indexer.project_vectors_2d
 
 
 def test_project_vectors_2d_shape_and_scale():

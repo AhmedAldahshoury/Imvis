@@ -6,6 +6,10 @@ services:
     environment:
       - IMAGE_DIR=/data/images
       - DATA_DIR=/data
+      - ACTIVE_MODEL=clip_b32
+      - WATCH_ENABLED=true
+      - WATCH_DEBOUNCE_SECONDS=20
+      - INDEX_THROTTLE_IMGS_PER_SEC=2
     volumes:
       - ./sample_images:/data/images
       - ./app_data:/data

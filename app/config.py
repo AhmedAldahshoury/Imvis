@@ -15,6 +15,12 @@ class Settings:
     cache_dir: Path = Path(os.getenv("CACHE_DIR", "/data/cache"))
     top_k: int = int(os.getenv("TOP_K", "8"))
     default_limit: int = int(os.getenv("DEFAULT_GRAPH_LIMIT", "1000"))
+    watch_enabled: bool = os.getenv("WATCH_ENABLED", "true").lower() == "true"
+    watch_debounce_seconds: int = int(os.getenv("WATCH_DEBOUNCE_SECONDS", "20"))
+    index_throttle_imgs_per_sec: float = float(
+        os.getenv("INDEX_THROTTLE_IMGS_PER_SEC", "2")
+    )
+    default_active_model: str = os.getenv("ACTIVE_MODEL", "clip_b32")
 
 
 settings = Settings()
