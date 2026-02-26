@@ -1,0 +1,12 @@
+# Keep build context minimal for faster docker builds.
+# Everything is ignored by default, then we allowlist only runtime files.
+*
+
+# Runtime application files
+!app/
+!static/
+!requirements.txt
+!Dockerfile
+
+# Optional docs/config metadata (small, harmless if included)
+!README.md

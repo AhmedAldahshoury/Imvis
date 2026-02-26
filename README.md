@@ -14,11 +14,14 @@ Local CPU-only photo similarity graph MVP built with FastAPI, SQLite, ONNX Runti
 - Interactive D3 force graph with thumbnails, search, similarity threshold filtering, and detail panel.
 
 ## Quickstart
-1. Put images in `./sample_images` (or generate demo images with `python scripts/generate_sample_images.py`).
+1. Choose an image source:
+   - Default (repo-local): put images in `./sample_images` (or generate demo images with `python scripts/generate_sample_images.py`).
+   - External folder: set `HOST_IMAGE_DIR` to any absolute host path.
 2. Start the app:
    ```bash
-   docker compose up --build
+   HOST_IMAGE_DIR=/absolute/path/to/your/photos docker compose up --build
    ```
+   If `HOST_IMAGE_DIR` is not set, Compose falls back to `./sample_images`.
 3. Open: http://localhost:8000
 
 ## API
@@ -27,6 +30,17 @@ Local CPU-only photo similarity graph MVP built with FastAPI, SQLite, ONNX Runti
 - `GET /api/graph?limit=1000&min_sim=0.0`
 - `GET /thumbs/<id>.jpg`
 - `GET /image/<id>?max_dim=1280`
+
+### Docker image folder mounting
+- Images do **not** need to be copied into the Docker image/container.
+- Docker build context is minimized via `.dockerignore` and the Dockerfile copies only `app/` + `static/` + `requirements.txt`, so large local folders (e.g. photo libraries) are not sent to the image build.
+- `docker-compose.yml` bind-mounts a host folder into `/data/images` inside the container:
+  - `${HOST_IMAGE_DIR:-./sample_images}:/data/images`
+- Use any host folder by exporting `HOST_IMAGE_DIR`, for example:
+  ```bash
+  export HOST_IMAGE_DIR=/mnt/nas/photos
+  docker compose up -d
+  ```
 
 ## Local development
 ```bash
