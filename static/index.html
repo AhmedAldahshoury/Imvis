@@ -6,16 +6,21 @@
   <title>Syno Photo Graph</title>
   <script src="https://d3js.org/d3.v7.min.js"></script>
   <style>
-    body { margin: 0; font-family: Arial, sans-serif; display: grid; grid-template-columns: 1fr 320px; height: 100vh; }
-    #graph-wrap { display: flex; flex-direction: column; }
+    body { margin: 0; font-family: Arial, sans-serif; display: grid; grid-template-columns: minmax(0, 1fr) 320px; height: 100vh; }
+    #graph-wrap { display: flex; flex-direction: column; min-width: 0; }
     #toolbar { padding: 10px; border-bottom: 1px solid #ddd; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
     #graph { flex:1; width:100%; height:100%; background:#fafafa; cursor: grab; }
     #graph:active { cursor: grabbing; }
     #side { border-left:1px solid #ddd; padding: 10px; overflow:auto; }
     #status { font-size:12px; color:#555; }
-    .node img { pointer-events: none; }
     .zoom-controls { margin-left:auto; display:flex; gap:6px; align-items:center; }
     .zoom-controls button { min-width:34px; }
+    .node-label { font-size: 11px; fill: #333; text-anchor: middle; pointer-events: none; }
+    .cluster-count { font-size: 12px; fill: #333; text-anchor: middle; pointer-events: none; font-weight: bold; }
+    @media (max-width: 1180px) {
+      body { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) 260px; }
+      #side { border-left: none; border-top: 1px solid #ddd; }
+    }
   </style>
 </head>
 <body>
@@ -42,33 +47,55 @@
     <div id="details">Click a node</div>
   </aside>
 <script>
-const sidebarWidth = 320;
-const toolbarHeight = 60;
 const svg = d3.select('#graph');
-const width = window.innerWidth - sidebarWidth;
-const height = window.innerHeight - toolbarHeight;
-svg.attr('viewBox', `0 0 ${width} ${height}`);
+const graphElement = document.getElementById('graph');
+const graphWrap = document.getElementById('graph-wrap');
+const toolbar = document.getElementById('toolbar');
+
+let width = 1200;
+let height = 800;
 
 const viewport = svg.append('g').attr('class', 'viewport');
 const clusterLayer = viewport.append('g').attr('class', 'clusters');
 const linkLayer = viewport.append('g').attr('class', 'links');
 const nodeLayer = viewport.append('g').attr('class', 'nodes');
+const labelLayer = viewport.append('g').attr('class', 'labels');
 
 const clusterColors = d3.scaleOrdinal(d3.schemeTableau10);
-const zoomBehavior = d3.zoom().scaleExtent([0.2, 8]).on('zoom', event => {
-  viewport.attr('transform', event.transform);
+const zoomBehavior = d3.zoom().scaleExtent([0.12, 24]).on('zoom', event => {
+  currentTransform = event.transform;
+  viewport.attr('transform', currentTransform);
+  renderScene();
 });
 svg.call(zoomBehavior);
 
 let graph = {nodes: [], edges: []};
 let nodesById = new Map();
+let nodePositions = new Map();
+let edgesPrepared = [];
+let clustersPrepared = [];
 let simThreshold = 0;
 let lastLoadedGraphSignature = '';
 let isFetchingGraph = false;
 let wasRunning = false;
 let activeModel = '';
 let modelsLoaded = false;
+let searchQuery = '';
+let currentTransform = d3.zoomIdentity;
 
+function resizeGraph() {
+  const rect = graphWrap.getBoundingClientRect();
+  const toolbarHeight = toolbar.getBoundingClientRect().height;
+  width = Math.max(320, Math.floor(rect.width));
+  height = Math.max(260, Math.floor(rect.height - toolbarHeight));
+  svg.attr('viewBox', `0 0 ${width} ${height}`);
+  svg.attr('width', width).attr('height', height);
+  renderScene();
+}
+
+new ResizeObserver(resizeGraph).observe(graphWrap);
+window.addEventListener('resize', resizeGraph);
+resizeGraph();
 
 async function loadModels() {
   const [modelsResp, configResp] = await Promise.all([fetch('/api/models'), fetch('/api/config')]);
@@ -98,7 +125,7 @@ function graphSignatureFromStatus(status) {
   return `${status.active_model}:${status.images}:${status.embeddings}:${status.edges}`;
 }
 
-function resetZoom(duration = 400) {
+function resetZoom(duration = 350) {
   svg.transition().duration(duration).call(zoomBehavior.transform, d3.zoomIdentity);
 }
 
@@ -106,52 +133,57 @@ function applyInitialLayout(nodes) {
   const spread = Math.min(width, height) * 0.42;
   nodes.forEach(node => {
     if (Number.isFinite(node.x) && Number.isFinite(node.y)) {
-      node.x = width / 2 + node.x * spread;
-      node.y = height / 2 + node.y * spread;
+      nodePositions.set(node.id, {
+        x: width / 2 + node.x * spread,
+        y: height / 2 + node.y * spread,
+      });
     } else {
-      node.x = width / 2 + (Math.random() - 0.5) * spread;
-      node.y = height / 2 + (Math.random() - 0.5) * spread;
+      nodePositions.set(node.id, {
+        x: width / 2 + (Math.random() - 0.5) * spread,
+        y: height / 2 + (Math.random() - 0.5) * spread,
+      });
     }
   });
 }
 
-function drawClusterHints(nodesToDraw) {
-  clusterLayer.selectAll('*').remove();
-  const validClusters = nodesToDraw.filter(n => n.cluster >= 0);
-  const clusters = d3.groups(validClusters, d => d.cluster)
-    .map(([cluster, members]) => ({cluster, members}))
-    .filter(item => item.members.length >= 3);
+function prepareGraphData() {
+  nodePositions.clear();
+  applyInitialLayout(graph.nodes);
 
-  clusterLayer.selectAll('circle')
-    .data(clusters)
-    .enter()
-    .append('circle')
-    .attr('fill', d => clusterColors(d.cluster))
-    .attr('fill-opacity', 0.07)
-    .attr('stroke', d => clusterColors(d.cluster))
-    .attr('stroke-opacity', 0.24)
-    .attr('stroke-width', 1.2)
-    .attr('cx', d => d3.mean(d.members, m => m.x))
-    .attr('cy', d => d3.mean(d.members, m => m.y))
-    .attr('r', d => {
-      const cx = d3.mean(d.members, m => m.x);
-      const cy = d3.mean(d.members, m => m.y);
-      const maxDistance = d3.max(d.members, m => Math.hypot(m.x - cx, m.y - cy)) || 0;
-      return Math.max(50, maxDistance + 40);
-    });
+  edgesPrepared = graph.edges
+    .filter(e => e.similarity >= simThreshold)
+    .map(e => ({...e, source: nodePositions.get(e.src_id), target: nodePositions.get(e.dst_id)}))
+    .filter(e => e.source && e.target);
+
+  const grouped = d3.groups(graph.nodes.filter(n => n.cluster >= 0), d => d.cluster);
+  clustersPrepared = grouped.map(([cluster, members]) => {
+    const points = members.map(m => nodePositions.get(m.id)).filter(Boolean);
+    const cx = d3.mean(points, p => p.x) || width / 2;
+    const cy = d3.mean(points, p => p.y) || height / 2;
+    const radius = Math.max(40, (d3.max(points, p => Math.hypot(p.x - cx, p.y - cy)) || 20) + 30);
+    return {
+      cluster,
+      members,
+      cx,
+      cy,
+      radius,
+    };
+  });
 }
 
 async function fetchGraph(signature = '') {
   if (isFetchingGraph) return;
   isFetchingGraph = true;
   try {
-    const r = await fetch('/api/graph?limit=1000&min_sim=0');
+    const r = await fetch('/api/graph?limit=5000&min_sim=0');
     graph = await r.json();
     nodesById = new Map(graph.nodes.map(n => [n.id, n]));
+    prepareGraphData();
     if (signature) {
       lastLoadedGraphSignature = signature;
     }
-    draw();
+    resetZoom(10);
+    renderScene();
   } finally {
     isFetchingGraph = false;
   }
@@ -181,66 +213,158 @@ async function pollStatus() {
 }
 setInterval(pollStatus, 1500);
 
-function draw() {
+function getViewportBounds() {
+  const x0 = (0 - currentTransform.x) / currentTransform.k;
+  const y0 = (0 - currentTransform.y) / currentTransform.k;
+  const x1 = (width - currentTransform.x) / currentTransform.k;
+  const y1 = (height - currentTransform.y) / currentTransform.k;
+  return {x0, y0, x1, y1};
+}
+
+function inBounds(point, bounds, pad = 0) {
+  return point.x >= bounds.x0 - pad && point.x <= bounds.x1 + pad && point.y >= bounds.y0 - pad && point.y <= bounds.y1 + pad;
+}
+
+function sampleRepresentativeNodes(nodes, bounds, gridSize) {
+  const byCell = new Map();
+  for (const n of nodes) {
+    const p = nodePositions.get(n.id);
+    if (!p || !inBounds(p, bounds, 140)) continue;
+    const key = `${Math.floor(p.x / gridSize)}:${Math.floor(p.y / gridSize)}:${n.cluster}`;
+    const bucket = byCell.get(key) || [];
+    bucket.push(n);
+    byCell.set(key, bucket);
+  }
+
+  const reps = [];
+  for (const [, bucket] of byCell) {
+    bucket.sort((a, b) => a.filename.localeCompare(b.filename));
+    const representative = bucket[0];
+    reps.push({
+      node: representative,
+      count: bucket.length,
+    });
+  }
+  return reps;
+}
+
+function applySearchOpacity(selection) {
+  selection.attr('opacity', d => {
+    const node = d.node || d;
+    return !searchQuery || node.filename.toLowerCase().includes(searchQuery) ? 1 : 0.2;
+  });
+}
+
+function renderScene() {
+  if (!graph.nodes.length) return;
+
+  const k = currentTransform.k;
+  const bounds = getViewportBounds();
+
+  clusterLayer.selectAll('*').remove();
   linkLayer.selectAll('*').remove();
   nodeLayer.selectAll('*').remove();
+  labelLayer.selectAll('*').remove();
 
-  const filteredEdges = graph.edges.filter(e => e.similarity >= simThreshold);
-  const linked = new Set(filteredEdges.flatMap(e => [e.src_id, e.dst_id]));
-  const filteredNodes = graph.nodes.filter(n => linked.has(n.id) || graph.nodes.length < 20);
-  const nodesToDraw = filteredNodes.length > 0 ? filteredNodes : graph.nodes.slice(0, Math.min(graph.nodes.length, 120));
-  applyInitialLayout(nodesToDraw);
+  if (k < 0.45) {
+    const visibleClusters = clustersPrepared.filter(c => inBounds({x: c.cx, y: c.cy}, bounds, c.radius));
+    clusterLayer.selectAll('circle')
+      .data(visibleClusters)
+      .enter()
+      .append('circle')
+      .attr('cx', d => d.cx)
+      .attr('cy', d => d.cy)
+      .attr('r', d => d.radius)
+      .attr('fill', d => clusterColors(d.cluster))
+      .attr('fill-opacity', 0.11)
+      .attr('stroke', d => clusterColors(d.cluster))
+      .attr('stroke-opacity', 0.35)
+      .attr('stroke-width', 1.4);
 
-  const nodeIdsToDraw = new Set(nodesToDraw.map(n => n.id));
-  const linksToDraw = filteredEdges
-    .filter(e => nodeIdsToDraw.has(e.src_id) && nodeIdsToDraw.has(e.dst_id))
-    .map(e => ({...e, source: e.src_id, target: e.dst_id}));
+    labelLayer.selectAll('text')
+      .data(visibleClusters)
+      .enter()
+      .append('text')
+      .attr('class', 'cluster-count')
+      .attr('x', d => d.cx)
+      .attr('y', d => d.cy)
+      .text(d => `${d.members.length} images`);
+    return;
+  }
 
-  const sim = d3.forceSimulation(nodesToDraw)
-      .force('link', d3.forceLink(linksToDraw).id(d => d.id).distance(d => 200 - d.similarity * 120).strength(0.35))
-      .force('charge', d3.forceManyBody().strength(-90))
-      .force('x', d3.forceX(d => d.x).strength(0.15))
-      .force('y', d3.forceY(d => d.y).strength(0.15))
-      .force('collide', d3.forceCollide(21));
+  const drawLinks = k >= 1;
+  const maxNodes = k >= 2 ? 1400 : 800;
+  const gridSize = Math.max(70, 220 / k);
 
-  const link = linkLayer.selectAll('line')
-      .data(linksToDraw)
+  const visibleNodes = graph.nodes.filter(n => {
+    const p = nodePositions.get(n.id);
+    return p && inBounds(p, bounds, 120);
+  });
+
+  let nodesForRender = visibleNodes;
+  let representativeMode = false;
+  if (k < 1.2) {
+    representativeMode = true;
+    const reps = sampleRepresentativeNodes(graph.nodes, bounds, gridSize).slice(0, maxNodes);
+    nodesForRender = reps.map(r => ({...r.node, _count: r.count, _representative: true}));
+  } else {
+    nodesForRender = visibleNodes.slice(0, maxNodes);
+  }
+
+  const visibleIds = new Set(nodesForRender.map(n => n.id));
+  if (drawLinks) {
+    const links = edgesPrepared
+      .filter(e => visibleIds.has(e.src_id) && visibleIds.has(e.dst_id))
+      .slice(0, 3400);
+
+    linkLayer.selectAll('line')
+      .data(links)
       .enter().append('line')
-      .attr('stroke', '#888')
-      .attr('stroke-opacity', d => Math.max(0.08, d.similarity * 0.8))
-      .attr('stroke-width', d => 0.4 + d.similarity * 2.2);
-
-  const node = nodeLayer.selectAll('g')
-      .data(nodesToDraw)
-      .enter().append('g')
-      .call(d3.drag()
-        .on('start', dragstarted)
-        .on('drag', dragged)
-        .on('end', dragended));
-
-  node.append('clipPath').attr('id', d => `clip-${d.id}`).append('circle').attr('r', 18);
-  node.append('image')
-      .attr('href', d => `/thumbs/${d.id}.jpg`)
-      .attr('x', -18).attr('y', -18).attr('width', 36).attr('height', 36)
-      .attr('clip-path', d => `url(#clip-${d.id})`);
-  node.append('circle').attr('r', 18).attr('fill', 'none').attr('stroke', d => d.cluster >= 0 ? clusterColors(d.cluster) : '#fff').attr('stroke-width', 2);
-
-  node.on('click', (_, d) => showDetails(d));
-
-  sim.on('tick', () => {
-    link
       .attr('x1', d => d.source.x)
       .attr('y1', d => d.source.y)
       .attr('x2', d => d.target.x)
-      .attr('y2', d => d.target.y);
+      .attr('y2', d => d.target.y)
+      .attr('stroke', '#888')
+      .attr('stroke-opacity', d => Math.max(0.06, d.similarity * 0.6))
+      .attr('stroke-width', d => 0.3 + d.similarity * 1.8);
+  }
 
-    node.attr('transform', d => `translate(${d.x},${d.y})`);
-    drawClusterHints(nodesToDraw);
-  });
+  const node = nodeLayer.selectAll('g')
+    .data(nodesForRender, d => d.id)
+    .enter().append('g')
+    .attr('transform', d => {
+      const p = nodePositions.get(d.id);
+      return `translate(${p.x},${p.y})`;
+    });
 
-  function dragstarted(event) { if (!event.active) sim.alphaTarget(0.25).restart(); event.subject.fx = event.subject.x; event.subject.fy = event.subject.y; }
-  function dragged(event) { event.subject.fx = event.x; event.subject.fy = event.y; }
-  function dragended(event) { if (!event.active) sim.alphaTarget(0); event.subject.fx = null; event.subject.fy = null; }
+  const baseRadius = representativeMode ? 15 : 18;
+
+  node.append('clipPath').attr('id', d => `clip-${d.id}`).append('circle').attr('r', baseRadius);
+  node.append('image')
+    .attr('href', d => `/thumbs/${d.id}.jpg`)
+    .attr('x', -baseRadius).attr('y', -baseRadius).attr('width', baseRadius * 2).attr('height', baseRadius * 2)
+    .attr('clip-path', d => `url(#clip-${d.id})`)
+    .attr('preserveAspectRatio', 'xMidYMid slice')
+    .on('error', function(_, d) {
+      this.setAttribute('href', `/image/${d.id}?max_dim=128`);
+    });
+
+  node.append('circle')
+    .attr('r', baseRadius)
+    .attr('fill', 'none')
+    .attr('stroke', d => d.cluster >= 0 ? clusterColors(d.cluster) : '#fff')
+    .attr('stroke-width', d => representativeMode ? 2.2 : 2);
+
+  if (representativeMode) {
+    node.append('text')
+      .attr('class', 'node-label')
+      .attr('y', baseRadius + 13)
+      .text(d => (d._count > 1 ? `${d._count}` : ''));
+  }
+
+  applySearchOpacity(node);
+
+  node.on('click', (_, d) => showDetails(nodesById.get(d.id) || d));
 }
 
 function showDetails(node) {
@@ -264,12 +388,13 @@ function showDetails(node) {
 document.getElementById('threshold').addEventListener('input', e => {
   simThreshold = parseFloat(e.target.value);
   document.getElementById('thresholdValue').textContent = simThreshold.toFixed(2);
-  draw();
+  prepareGraphData();
+  renderScene();
 });
 
 document.getElementById('search').addEventListener('input', e => {
-  const q = e.target.value.toLowerCase();
-  nodeLayer.selectAll('g').attr('opacity', d => !q || d.filename.toLowerCase().includes(q) ? 1 : 0.15);
+  searchQuery = e.target.value.toLowerCase();
+  renderScene();
 });
 
 document.getElementById('reindex').addEventListener('click', async () => {
