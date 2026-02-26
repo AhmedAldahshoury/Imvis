@@ -33,6 +33,7 @@ Local CPU-only photo similarity graph MVP built with FastAPI, SQLite, ONNX Runti
 
 ### Docker image folder mounting
 - Images do **not** need to be copied into the Docker image/container.
+- Docker build context is minimized via `.dockerignore` and the Dockerfile copies only `app/` + `static/` + `requirements.txt`, so large local folders (e.g. photo libraries) are not sent to the image build.
 - `docker-compose.yml` bind-mounts a host folder into `/data/images` inside the container:
   - `${HOST_IMAGE_DIR:-./sample_images}:/data/images`
 - Use any host folder by exporting `HOST_IMAGE_DIR`, for example:
