@@ -3,34 +3,108 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Syno Photo Graph</title>
+  <title>Syno Photo Atlas</title>
   <script src="https://d3js.org/d3.v7.min.js"></script>
   <style>
-    body { margin: 0; font-family: Arial, sans-serif; display: grid; grid-template-columns: 1fr 320px; height: 100vh; }
-    #graph-wrap { display: flex; flex-direction: column; }
-    #toolbar { padding: 10px; border-bottom: 1px solid #ddd; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
-    #graph { flex:1; width:100%; height:100%; background:#fafafa; cursor: grab; }
-    #graph:active { cursor: grabbing; }
-    #side { border-left:1px solid #ddd; padding: 10px; overflow:auto; }
-    #status { font-size:12px; color:#555; min-width: 280px; }
+    :root {
+      color-scheme: dark;
+      --bg: #080c14;
+      --panel: #0f1626;
+      --border: #1f2b45;
+      --text: #dfebff;
+      --muted: #89a2c8;
+      --accent: #59a0ff;
+      --accent-2: #51d2c2;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      background: radial-gradient(circle at top right, #152038 0%, #080c14 55%);
+      color: var(--text);
+      height: 100vh;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 360px;
+    }
+
+    #visual-wrap { display:flex; flex-direction:column; min-width:0; }
+    #toolbar {
+      padding: 12px;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      border-bottom: 1px solid var(--border);
+      background: rgba(10, 18, 34, 0.85);
+      backdrop-filter: blur(8px);
+    }
+    #toolbar label, #status, #progressLabel, #thresholdValue, #levelHint { font-size: 12px; color: var(--muted); }
+    button, select, input {
+      background: #111a2d;
+      color: var(--text);
+      border: 1px solid #2c3b5f;
+      border-radius: 8px;
+      padding: 6px 9px;
+    }
+    button:hover { border-color: var(--accent); }
+    #search { min-width: 160px; }
+    #modelWarning { font-size: 12px; color: #f7be73; }
     #progressWrap { display:flex; align-items:center; gap:8px; min-width:220px; }
-    #progressBar { width:180px; height:10px; appearance:none; }
-    #progressBar::-webkit-progress-bar { background:#e9edf3; border-radius:8px; }
-    #progressBar::-webkit-progress-value { background:#4a8df6; border-radius:8px; }
-    #progressBar::-moz-progress-bar { background:#4a8df6; border-radius:8px; }
-    #progressLabel { font-size:12px; color:#333; min-width:80px; }
-    .node img { pointer-events: none; }
+    #progressBar { width:170px; height:10px; appearance:none; }
+    #progressBar::-webkit-progress-bar { background:#1a2944; border-radius:8px; }
+    #progressBar::-webkit-progress-value { background:linear-gradient(90deg,var(--accent),var(--accent-2)); border-radius:8px; }
+    #progressBar::-moz-progress-bar { background:linear-gradient(90deg,var(--accent),var(--accent-2)); border-radius:8px; }
     .zoom-controls { margin-left:auto; display:flex; gap:6px; align-items:center; }
-    .zoom-controls button { min-width:34px; }
+
+    #view {
+      position: relative;
+      flex: 1;
+      min-height: 0;
+      overflow: hidden;
+      background: radial-gradient(circle at 30% 20%, rgba(24, 43, 81, 0.35), rgba(8, 12, 20, 0.9));
+    }
+    #atlasCanvas { width:100%; height:100%; display:block; cursor: grab; }
+    #atlasCanvas.dragging { cursor: grabbing; }
+
+    #overlay {
+      pointer-events:none;
+      position:absolute;
+      inset:12px auto auto 12px;
+      background: rgba(8, 13, 24, 0.72);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 8px 10px;
+      font-size: 12px;
+      color: var(--muted);
+      display:flex;
+      gap:10px;
+    }
+
+    #side {
+      border-left:1px solid var(--border);
+      background: linear-gradient(180deg, rgba(12, 20, 36, 0.98), rgba(8, 12, 20, 0.95));
+      padding: 12px;
+      overflow:auto;
+    }
+    #details img { width:100%; border-radius: 10px; border:1px solid #273656; }
+    #details h4 { margin: 4px 0 10px; }
+    #details ol { margin: 0; padding-left: 18px; color: var(--muted); }
+    #details li { margin-bottom: 4px; }
+
+    @media (max-width: 1100px) {
+      body { grid-template-columns: 1fr; }
+      #side { border-left: none; border-top: 1px solid var(--border); max-height: 35vh; }
+    }
   </style>
 </head>
 <body>
-  <div id="graph-wrap">
+  <div id="visual-wrap">
     <div id="toolbar">
       <button id="reindex">Reindex</button>
       <label>Model <select id="modelSelect"></select></label>
       <button id="applyModel">Apply & Reindex</button>
-      <span id="modelWarning" style="font-size:12px;color:#8a4b00;">Changing model rebuilds embeddings and graph.</span>
+      <span id="modelWarning">Changing model rebuilds embeddings and graph.</span>
       <label>Min similarity <input id="threshold" type="range" min="0" max="1" step="0.01" value="0"/></label>
       <span id="thresholdValue">0.00</span>
       <input id="search" placeholder="Search filename" />
@@ -40,45 +114,304 @@
         <span id="progressLabel">Idle</span>
       </div>
       <div class="zoom-controls">
+        <span id="levelHint">Overview</span>
         <button id="zoomOut" title="Zoom out">−</button>
         <button id="zoomIn" title="Zoom in">+</button>
         <button id="zoomReset" title="Reset view">Reset</button>
       </div>
     </div>
-    <svg id="graph"></svg>
+    <div id="view">
+      <canvas id="atlasCanvas"></canvas>
+      <div id="overlay">
+        <span id="visibleCount">Visible: 0</span>
+        <span id="thumbCount">Thumbs: 0</span>
+      </div>
+    </div>
   </div>
   <aside id="side">
     <h3>Selection</h3>
-    <div id="details">Click a node</div>
+    <div id="details">Click a point or thumbnail.</div>
   </aside>
+
 <script>
-const sidebarWidth = 320;
-const toolbarHeight = 60;
-const svg = d3.select('#graph');
-const width = window.innerWidth - sidebarWidth;
-const height = window.innerHeight - toolbarHeight;
-svg.attr('viewBox', `0 0 ${width} ${height}`);
-
-const viewport = svg.append('g').attr('class', 'viewport');
-const clusterLayer = viewport.append('g').attr('class', 'clusters');
-const linkLayer = viewport.append('g').attr('class', 'links');
-const nodeLayer = viewport.append('g').attr('class', 'nodes');
-
-const clusterColors = d3.scaleOrdinal(d3.schemeTableau10);
-const zoomBehavior = d3.zoom().scaleExtent([0.2, 8]).on('zoom', event => {
-  viewport.attr('transform', event.transform);
-});
-svg.call(zoomBehavior);
+const canvas = document.getElementById('atlasCanvas');
+const ctx = canvas.getContext('2d');
+const view = document.getElementById('view');
 
 let graph = {nodes: [], edges: []};
 let nodesById = new Map();
+let edgeMap = new Map();
+let quadtree = d3.quadtree();
 let simThreshold = 0;
+let searchQuery = '';
 let lastLoadedGraphSignature = '';
 let isFetchingGraph = false;
 let wasRunning = false;
 let activeModel = '';
-let modelsLoaded = false;
 
+let baseScale = 1;
+let transform = d3.zoomIdentity;
+let zoomBehavior;
+let selectedNodeId = null;
+
+const nodeImageCache = new Map();
+const missingThumbs = new Set();
+const clusterColors = d3.scaleOrdinal(d3.schemeTableau10);
+
+function resizeCanvas() {
+  const rect = view.getBoundingClientRect();
+  const ratio = window.devicePixelRatio || 1;
+  canvas.width = Math.max(1, Math.floor(rect.width * ratio));
+  canvas.height = Math.max(1, Math.floor(rect.height * ratio));
+  canvas.style.width = `${rect.width}px`;
+  canvas.style.height = `${rect.height}px`;
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  render();
+}
+window.addEventListener('resize', resizeCanvas);
+
+function fitView() {
+  if (!graph.nodes.length) {
+    transform = d3.zoomIdentity;
+    zoomBehavior.transform(d3.select(canvas), transform);
+    return;
+  }
+  const bounds = {
+    minX: d3.min(graph.nodes, d => d.x),
+    maxX: d3.max(graph.nodes, d => d.x),
+    minY: d3.min(graph.nodes, d => d.y),
+    maxY: d3.max(graph.nodes, d => d.y)
+  };
+  const rect = view.getBoundingClientRect();
+  const pad = 80;
+  const dx = Math.max(1, bounds.maxX - bounds.minX);
+  const dy = Math.max(1, bounds.maxY - bounds.minY);
+  const k = Math.min((rect.width - pad) / dx, (rect.height - pad) / dy);
+  baseScale = Math.max(0.2, Math.min(2, k));
+  const tx = rect.width / 2 - (bounds.minX + dx / 2) * baseScale;
+  const ty = rect.height / 2 - (bounds.minY + dy / 2) * baseScale;
+  transform = d3.zoomIdentity.translate(tx, ty).scale(baseScale);
+  zoomBehavior.transform(d3.select(canvas), transform);
+}
+
+function buildSpatialIndex() {
+  quadtree = d3.quadtree()
+    .x(d => d.x)
+    .y(d => d.y)
+    .addAll(graph.nodes);
+}
+
+function applyInitialLayout(nodes) {
+  const layoutNodes = nodes.filter(n => Number.isFinite(n.x) && Number.isFinite(n.y));
+  const randomize = layoutNodes.length < Math.max(10, Math.floor(nodes.length * 0.5));
+  const spread = 1900;
+
+  for (const node of nodes) {
+    if (!randomize && Number.isFinite(node.x) && Number.isFinite(node.y)) {
+      node.x *= spread;
+      node.y *= spread;
+    } else {
+      node.x = (Math.random() - 0.5) * spread;
+      node.y = (Math.random() - 0.5) * spread;
+    }
+  }
+}
+
+function buildEdgeMap() {
+  edgeMap = new Map();
+  for (const e of graph.edges) {
+    if (e.similarity < simThreshold) continue;
+    const a = `${e.src_id}|${e.dst_id}`;
+    const b = `${e.dst_id}|${e.src_id}`;
+    edgeMap.set(a, e.similarity);
+    edgeMap.set(b, e.similarity);
+  }
+}
+
+function queryVisibleWorld() {
+  const rect = view.getBoundingClientRect();
+  const [x0, y0] = transform.invert([0, 0]);
+  const [x3, y3] = transform.invert([rect.width, rect.height]);
+  const visible = [];
+  quadtree.visit((node, x1, y1, x2, y2) => {
+    if (x1 > x3 || x2 < x0 || y1 > y3 || y2 < y0) return true;
+    if (!node.length) {
+      do {
+        const d = node.data;
+        if (d.x >= x0 && d.x <= x3 && d.y >= y0 && d.y <= y3) visible.push(d);
+      } while ((node = node.next));
+    }
+    return false;
+  });
+  return visible;
+}
+
+function render() {
+  const rect = view.getBoundingClientRect();
+  ctx.clearRect(0, 0, rect.width, rect.height);
+  if (!graph.nodes.length) return;
+
+  const visible = queryVisibleWorld();
+  const zoomLevel = transform.k / Math.max(0.0001, baseScale);
+  const showThumbs = zoomLevel > 2;
+  const showLabels = zoomLevel > 3.6;
+
+  document.getElementById('levelHint').textContent = showThumbs ? 'Detail' : 'Overview';
+  document.getElementById('visibleCount').textContent = `Visible: ${visible.length}`;
+
+  ctx.save();
+  ctx.translate(transform.x, transform.y);
+  ctx.scale(transform.k, transform.k);
+
+  if (zoomLevel > 1.35 && visible.length < 1200) {
+    ctx.strokeStyle = 'rgba(104, 136, 188, 0.18)';
+    ctx.lineWidth = 1 / transform.k;
+    for (const n of visible) {
+      for (const other of visible) {
+        if (other.id <= n.id) continue;
+        const sim = edgeMap.get(`${n.id}|${other.id}`);
+        if (!sim || sim < simThreshold) continue;
+        ctx.globalAlpha = Math.min(0.65, sim);
+        ctx.beginPath();
+        ctx.moveTo(n.x, n.y);
+        ctx.lineTo(other.x, other.y);
+        ctx.stroke();
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  let thumbsDrawn = 0;
+  for (const n of visible) {
+    const sx = n.x;
+    const sy = n.y;
+    const highlighted = selectedNodeId === n.id || (searchQuery && n.filename.toLowerCase().includes(searchQuery));
+    const baseRadius = showThumbs ? 24 / transform.k : 8 / transform.k;
+
+    if (showThumbs) {
+      const key = n.id;
+      let img = nodeImageCache.get(key);
+      if (!img && !missingThumbs.has(key)) {
+        img = new Image();
+        img.src = `/thumbs/${key}.jpg`;
+        img.onload = () => render();
+        img.onerror = () => {
+          missingThumbs.add(key);
+          const fallback = new Image();
+          fallback.src = `/image/${key}?max_dim=196`;
+          fallback.onload = () => {
+            nodeImageCache.set(key, fallback);
+            render();
+          };
+        };
+        nodeImageCache.set(key, img);
+      }
+      if (img && img.complete && img.naturalWidth > 0) {
+        const r = 32 / transform.k;
+        ctx.save();
+        ctx.beginPath();
+        ctx.roundRect(sx - r, sy - r, r * 2, r * 2, 8 / transform.k);
+        ctx.clip();
+        ctx.drawImage(img, sx - r, sy - r, r * 2, r * 2);
+        ctx.restore();
+
+        ctx.strokeStyle = highlighted ? '#ffffff' : (n.cluster >= 0 ? clusterColors(n.cluster) : '#5f7bb2');
+        ctx.lineWidth = highlighted ? 4 / transform.k : 1.6 / transform.k;
+        ctx.strokeRect(sx - r, sy - r, r * 2, r * 2);
+        thumbsDrawn += 1;
+      } else {
+        ctx.fillStyle = '#2a3859';
+        ctx.fillRect(sx - baseRadius, sy - baseRadius, baseRadius * 2, baseRadius * 2);
+      }
+    } else {
+      const r = highlighted ? 10 / transform.k : 7 / transform.k;
+      const color = n.cluster >= 0 ? clusterColors(n.cluster) : '#7a95be';
+      ctx.fillStyle = color;
+      ctx.globalAlpha = highlighted ? 0.95 : 0.75;
+      ctx.beginPath();
+      ctx.arc(sx, sy, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+
+    if (showLabels && (highlighted || selectedNodeId === n.id)) {
+      ctx.fillStyle = '#eff6ff';
+      ctx.font = `${Math.max(11, 13 / transform.k)}px sans-serif`;
+      ctx.fillText(n.filename.slice(0, 32), sx + 10 / transform.k, sy - 8 / transform.k);
+    }
+  }
+
+  ctx.restore();
+  document.getElementById('thumbCount').textContent = `Thumbs: ${thumbsDrawn}`;
+}
+
+function showDetails(node) {
+  selectedNodeId = node.id;
+  const neigh = graph.edges
+    .filter(e => e.src_id === node.id || e.dst_id === node.id)
+    .map(e => ({id: e.src_id === node.id ? e.dst_id : e.src_id, similarity: e.similarity}))
+    .sort((a,b) => b.similarity - a.similarity)
+    .slice(0, 18);
+
+  const items = neigh.map(n => `<li>${nodesById.get(n.id)?.filename || n.id} (${n.similarity.toFixed(3)})</li>`).join('');
+  const clusterInfo = node.cluster >= 0 ? `<p><strong>Cluster:</strong> ${node.cluster}</p>` : '';
+  document.getElementById('details').innerHTML = `
+    <h4>${node.filename}</h4>
+    ${clusterInfo}
+    <img src="/image/${node.id}?max_dim=720" alt="Selected image" />
+    <h5>Top neighbours</h5>
+    <ol>${items}</ol>
+  `;
+  render();
+}
+
+function pickNodeAt(clientX, clientY) {
+  const rect = view.getBoundingClientRect();
+  const x = clientX - rect.left;
+  const y = clientY - rect.top;
+  const [wx, wy] = transform.invert([x, y]);
+  const radius = 46 / transform.k;
+
+  let closest = null;
+  let bestDist = Infinity;
+  quadtree.visit((node, x1, y1, x2, y2) => {
+    if (x1 > wx + radius || x2 < wx - radius || y1 > wy + radius || y2 < wy - radius) return true;
+    if (!node.length) {
+      do {
+        const d = node.data;
+        const dist = Math.hypot(d.x - wx, d.y - wy);
+        if (dist < radius && dist < bestDist) {
+          bestDist = dist;
+          closest = d;
+        }
+      } while ((node = node.next));
+    }
+    return false;
+  });
+  return closest;
+}
+
+function graphSignatureFromStatus(status) {
+  return `${status.active_model}:${status.images}:${status.embeddings}:${status.edges}`;
+}
+
+async function fetchGraph(signature = '') {
+  if (isFetchingGraph) return;
+  isFetchingGraph = true;
+  try {
+    const r = await fetch('/api/graph?limit=5000&min_sim=0');
+    graph = await r.json();
+    nodesById = new Map(graph.nodes.map(n => [n.id, n]));
+    applyInitialLayout(graph.nodes);
+    buildSpatialIndex();
+    buildEdgeMap();
+    if (signature) lastLoadedGraphSignature = signature;
+    fitView();
+    render();
+  } finally {
+    isFetchingGraph = false;
+  }
+}
 
 async function loadModels() {
   const [modelsResp, configResp] = await Promise.all([fetch('/api/models'), fetch('/api/config')]);
@@ -95,7 +428,6 @@ async function loadModels() {
     if (m.name === activeModel) opt.selected = true;
     select.appendChild(opt);
   }
-  modelsLoaded = true;
 }
 
 function setControlsDisabled(disabled) {
@@ -104,98 +436,25 @@ function setControlsDisabled(disabled) {
   document.getElementById('applyModel').disabled = disabled;
 }
 
-function graphSignatureFromStatus(status) {
-  return `${status.active_model}:${status.images}:${status.embeddings}:${status.edges}`;
-}
-
-function resetZoom(duration = 400) {
-  svg.transition().duration(duration).call(zoomBehavior.transform, d3.zoomIdentity);
-}
-
-function applyInitialLayout(nodes) {
-  const spread = Math.min(width, height) * 0.42;
-  nodes.forEach(node => {
-    if (Number.isFinite(node.x) && Number.isFinite(node.y)) {
-      node.x = width / 2 + node.x * spread;
-      node.y = height / 2 + node.y * spread;
-    } else {
-      node.x = width / 2 + (Math.random() - 0.5) * spread;
-      node.y = height / 2 + (Math.random() - 0.5) * spread;
-    }
-  });
-}
-
-function drawClusterHints(nodesToDraw) {
-  clusterLayer.selectAll('*').remove();
-  const validClusters = nodesToDraw.filter(n => n.cluster >= 0);
-  const clusters = d3.groups(validClusters, d => d.cluster)
-    .map(([cluster, members]) => ({cluster, members}))
-    .filter(item => item.members.length >= 3);
-
-  clusterLayer.selectAll('circle')
-    .data(clusters)
-    .enter()
-    .append('circle')
-    .attr('fill', d => clusterColors(d.cluster))
-    .attr('fill-opacity', 0.07)
-    .attr('stroke', d => clusterColors(d.cluster))
-    .attr('stroke-opacity', 0.24)
-    .attr('stroke-width', 1.2)
-    .attr('cx', d => d3.mean(d.members, m => m.x))
-    .attr('cy', d => d3.mean(d.members, m => m.y))
-    .attr('r', d => {
-      const cx = d3.mean(d.members, m => m.x);
-      const cy = d3.mean(d.members, m => m.y);
-      const maxDistance = d3.max(d.members, m => Math.hypot(m.x - cx, m.y - cy)) || 0;
-      return Math.max(50, maxDistance + 40);
-    });
-}
-
-async function fetchGraph(signature = '') {
-  if (isFetchingGraph) return;
-  isFetchingGraph = true;
-  try {
-    const r = await fetch('/api/graph?limit=1000&min_sim=0');
-    graph = await r.json();
-    nodesById = new Map(graph.nodes.map(n => [n.id, n]));
-    if (signature) {
-      lastLoadedGraphSignature = signature;
-    }
-    draw();
-  } finally {
-    isFetchingGraph = false;
-  }
-}
-
-
 function updateProgressUI(status) {
   const bar = document.getElementById('progressBar');
   const label = document.getElementById('progressLabel');
   const stage = status.stage || 'idle';
   const total = Number(status.progress_total || 0);
   const current = Number(status.progress_current || 0);
-
   if (status.running && total > 0) {
     const pct = Math.max(0, Math.min(100, (current / total) * 100));
     bar.value = pct;
     label.textContent = `${stage} ${current}/${total} (${pct.toFixed(0)}%)`;
     return;
   }
-
   if (status.running) {
     bar.value = 100;
     label.textContent = `${stage}...`;
     return;
   }
-
-  if (stage === 'done') {
-    bar.value = 100;
-    label.textContent = 'Done';
-    return;
-  }
-
-  bar.value = 0;
-  label.textContent = 'Idle';
+  bar.value = stage === 'done' ? 100 : 0;
+  label.textContent = stage === 'done' ? 'Done' : 'Idle';
 }
 
 async function pollStatus() {
@@ -211,107 +470,39 @@ async function pollStatus() {
     wasRunning = true;
     return;
   }
-
   const nextSig = graphSignatureFromStatus(s);
   const hasGraphData = graph.nodes.length > 0 || graph.edges.length > 0;
   const shouldFetch = s.images > 0 && (!hasGraphData || wasRunning || nextSig !== lastLoadedGraphSignature);
   wasRunning = false;
-
-  if (shouldFetch) {
-    await fetchGraph(nextSig);
-  }
-}
-setInterval(pollStatus, 1500);
-
-function draw() {
-  linkLayer.selectAll('*').remove();
-  nodeLayer.selectAll('*').remove();
-
-  const filteredEdges = graph.edges.filter(e => e.similarity >= simThreshold);
-  const linked = new Set(filteredEdges.flatMap(e => [e.src_id, e.dst_id]));
-  const filteredNodes = graph.nodes.filter(n => linked.has(n.id) || graph.nodes.length < 20);
-  const nodesToDraw = filteredNodes.length > 0 ? filteredNodes : graph.nodes.slice(0, Math.min(graph.nodes.length, 120));
-  applyInitialLayout(nodesToDraw);
-
-  const nodeIdsToDraw = new Set(nodesToDraw.map(n => n.id));
-  const linksToDraw = filteredEdges
-    .filter(e => nodeIdsToDraw.has(e.src_id) && nodeIdsToDraw.has(e.dst_id))
-    .map(e => ({...e, source: e.src_id, target: e.dst_id}));
-
-  const sim = d3.forceSimulation(nodesToDraw)
-      .force('link', d3.forceLink(linksToDraw).id(d => d.id).distance(d => 200 - d.similarity * 120).strength(0.35))
-      .force('charge', d3.forceManyBody().strength(-90))
-      .force('x', d3.forceX(d => d.x).strength(0.15))
-      .force('y', d3.forceY(d => d.y).strength(0.15))
-      .force('collide', d3.forceCollide(21));
-
-  const link = linkLayer.selectAll('line')
-      .data(linksToDraw)
-      .enter().append('line')
-      .attr('stroke', '#888')
-      .attr('stroke-opacity', d => Math.max(0.08, d.similarity * 0.8))
-      .attr('stroke-width', d => 0.4 + d.similarity * 2.2);
-
-  const node = nodeLayer.selectAll('g')
-      .data(nodesToDraw)
-      .enter().append('g')
-      .call(d3.drag()
-        .on('start', dragstarted)
-        .on('drag', dragged)
-        .on('end', dragended));
-
-  node.append('clipPath').attr('id', d => `clip-${d.id}`).append('circle').attr('r', 18);
-  node.append('image')
-      .attr('href', d => `/thumbs/${d.id}.jpg`)
-      .attr('x', -18).attr('y', -18).attr('width', 36).attr('height', 36)
-      .attr('clip-path', d => `url(#clip-${d.id})`);
-  node.append('circle').attr('r', 18).attr('fill', 'none').attr('stroke', d => d.cluster >= 0 ? clusterColors(d.cluster) : '#fff').attr('stroke-width', 2);
-
-  node.on('click', (_, d) => showDetails(d));
-
-  sim.on('tick', () => {
-    link
-      .attr('x1', d => d.source.x)
-      .attr('y1', d => d.source.y)
-      .attr('x2', d => d.target.x)
-      .attr('y2', d => d.target.y);
-
-    node.attr('transform', d => `translate(${d.x},${d.y})`);
-    drawClusterHints(nodesToDraw);
-  });
-
-  function dragstarted(event) { if (!event.active) sim.alphaTarget(0.25).restart(); event.subject.fx = event.subject.x; event.subject.fy = event.subject.y; }
-  function dragged(event) { event.subject.fx = event.x; event.subject.fy = event.y; }
-  function dragended(event) { if (!event.active) sim.alphaTarget(0); event.subject.fx = null; event.subject.fy = null; }
+  if (shouldFetch) await fetchGraph(nextSig);
 }
 
-function showDetails(node) {
-  const neigh = graph.edges
-    .filter(e => e.src_id === node.id || e.dst_id === node.id)
-    .map(e => ({id: e.src_id === node.id ? e.dst_id : e.src_id, similarity: e.similarity}))
-    .sort((a,b) => b.similarity-a.similarity)
-    .slice(0, 12);
+zoomBehavior = d3.zoom()
+  .scaleExtent([0.08, 60])
+  .on('start', () => canvas.classList.add('dragging'))
+  .on('zoom', (event) => {
+    transform = event.transform;
+    render();
+  })
+  .on('end', () => canvas.classList.remove('dragging'));
 
-  const items = neigh.map(n => `<li>${nodesById.get(n.id)?.filename || n.id} (${n.similarity.toFixed(3)})</li>`).join('');
-  const clusterInfo = node.cluster >= 0 ? `<p><strong>Cluster:</strong> ${node.cluster}</p>` : '';
-  document.getElementById('details').innerHTML = `
-    <h4>${node.filename}</h4>
-    ${clusterInfo}
-    <img src="/image/${node.id}?max_dim=512" style="max-width:100%; border-radius:8px" />
-    <h5>Top neighbours</h5>
-    <ol>${items}</ol>
-  `;
-}
+d3.select(canvas).call(zoomBehavior).on('dblclick.zoom', null);
+
+canvas.addEventListener('click', (e) => {
+  const picked = pickNodeAt(e.clientX, e.clientY);
+  if (picked) showDetails(picked);
+});
 
 document.getElementById('threshold').addEventListener('input', e => {
   simThreshold = parseFloat(e.target.value);
   document.getElementById('thresholdValue').textContent = simThreshold.toFixed(2);
-  draw();
+  buildEdgeMap();
+  render();
 });
 
 document.getElementById('search').addEventListener('input', e => {
-  const q = e.target.value.toLowerCase();
-  nodeLayer.selectAll('g').attr('opacity', d => !q || d.filename.toLowerCase().includes(q) ? 1 : 0.15);
+  searchQuery = e.target.value.toLowerCase().trim();
+  render();
 });
 
 document.getElementById('reindex').addEventListener('click', async () => {
@@ -326,16 +517,16 @@ document.getElementById('applyModel').addEventListener('click', async () => {
 });
 
 document.getElementById('zoomIn').addEventListener('click', () => {
-  svg.transition().duration(220).call(zoomBehavior.scaleBy, 1.25);
+  d3.select(canvas).transition().duration(180).call(zoomBehavior.scaleBy, 1.45);
 });
-
 document.getElementById('zoomOut').addEventListener('click', () => {
-  svg.transition().duration(220).call(zoomBehavior.scaleBy, 0.8);
+  d3.select(canvas).transition().duration(180).call(zoomBehavior.scaleBy, 0.7);
 });
+document.getElementById('zoomReset').addEventListener('click', () => fitView());
 
-document.getElementById('zoomReset').addEventListener('click', () => resetZoom());
-
+resizeCanvas();
 loadModels().then(() => pollStatus());
+setInterval(pollStatus, 1500);
 </script>
 </body>
 </html>
