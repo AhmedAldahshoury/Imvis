@@ -230,9 +230,8 @@ function buildEdgeMap() {
 
 function queryVisibleWorld() {
   const rect = view.getBoundingClientRect();
-  const inv = transform.invert;
-  const [x0, y0] = inv([0, 0]);
-  const [x3, y3] = inv([rect.width, rect.height]);
+  const [x0, y0] = transform.invert([0, 0]);
+  const [x3, y3] = transform.invert([rect.width, rect.height]);
   const visible = [];
   quadtree.visit((node, x1, y1, x2, y2) => {
     if (x1 > x3 || x2 < x0 || y1 > y3 || y2 < y0) return true;
