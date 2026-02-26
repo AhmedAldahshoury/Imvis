@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import urllib.request
 from pathlib import Path
 from typing import Sequence
@@ -15,6 +16,7 @@ class MultiModelEmbedder:
     def __init__(self, model_dir: Path):
         self.model_dir = model_dir
         self._sessions: dict[str, ort.InferenceSession] = {}
+        self._session_lock = threading.Lock()
 
     def ensure_model(self, model_name: str) -> Path:
         spec = get_model_spec(model_name)
@@ -31,17 +33,21 @@ class MultiModelEmbedder:
         session = self._sessions.get(model_name)
         if session is not None:
             return session
-        model_path = self.ensure_model(model_name)
-        options = ort.SessionOptions()
-        options.intra_op_num_threads = 1
-        options.inter_op_num_threads = 1
-        session = ort.InferenceSession(
-            str(model_path),
-            sess_options=options,
-            providers=["CPUExecutionProvider"],
-        )
-        self._sessions[model_name] = session
-        return session
+        with self._session_lock:
+            session = self._sessions.get(model_name)
+            if session is not None:
+                return session
+            model_path = self.ensure_model(model_name)
+            options = ort.SessionOptions()
+            options.intra_op_num_threads = 1
+            options.inter_op_num_threads = 1
+            session = ort.InferenceSession(
+                str(model_path),
+                sess_options=options,
+                providers=["CPUExecutionProvider"],
+            )
+            self._sessions[model_name] = session
+            return session
 
     def _preprocess(self, image_path: Path, model_name: str) -> np.ndarray:
         spec = get_model_spec(model_name)
