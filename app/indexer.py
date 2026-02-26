@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -159,19 +159,37 @@ class Indexer:
         if not records:
             return []
 
+        throttle = self.settings.index_throttle_imgs_per_sec
+        submit_interval = (1.0 / throttle) if throttle > 0 else 0.0
+        next_submit_at = 0.0
+
         results = []
         completed = 0
+        pending = set()
+        submit_index = 0
+
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = []
-            for rec in records:
-                futures.append(pool.submit(job, rec))
-                if self.settings.index_throttle_imgs_per_sec > 0:
-                    time.sleep(1 / self.settings.index_throttle_imgs_per_sec)
-            for future in as_completed(futures):
-                results.append(future.result())
-                completed += 1
-                self._set(progress_current=completed)
+            while submit_index < len(records) or pending:
+                now = time.monotonic()
+                while submit_index < len(records) and len(pending) < workers and now >= next_submit_at:
+                    pending.add(pool.submit(job, records[submit_index]))
+                    submit_index += 1
+                    next_submit_at = now + submit_interval if submit_interval > 0 else now
+                    now = time.monotonic()
+
+                if not pending:
+                    sleep_for = max(0.001, next_submit_at - time.monotonic())
+                    time.sleep(sleep_for)
+                    continue
+
+                done, pending = wait(pending, timeout=0.1, return_when=FIRST_COMPLETED)
+                for future in done:
+                    results.append(future.result())
+                    completed += 1
+                    self._set(progress_current=completed)
+
         return results
+
 
     def _run_loop(self) -> None:
         while True:
