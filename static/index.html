@@ -12,7 +12,13 @@
     #graph { flex:1; width:100%; height:100%; background:#fafafa; cursor: grab; }
     #graph:active { cursor: grabbing; }
     #side { border-left:1px solid #ddd; padding: 10px; overflow:auto; }
-    #status { font-size:12px; color:#555; }
+    #status { font-size:12px; color:#555; min-width: 280px; }
+    #progressWrap { display:flex; align-items:center; gap:8px; min-width:220px; }
+    #progressBar { width:180px; height:10px; appearance:none; }
+    #progressBar::-webkit-progress-bar { background:#e9edf3; border-radius:8px; }
+    #progressBar::-webkit-progress-value { background:#4a8df6; border-radius:8px; }
+    #progressBar::-moz-progress-bar { background:#4a8df6; border-radius:8px; }
+    #progressLabel { font-size:12px; color:#333; min-width:80px; }
     .node img { pointer-events: none; }
     .zoom-controls { margin-left:auto; display:flex; gap:6px; align-items:center; }
     .zoom-controls button { min-width:34px; }
@@ -29,6 +35,10 @@
       <span id="thresholdValue">0.00</span>
       <input id="search" placeholder="Search filename" />
       <span id="status">Loading...</span>
+      <div id="progressWrap" title="Background indexing progress">
+        <progress id="progressBar" max="100" value="0"></progress>
+        <span id="progressLabel">Idle</span>
+      </div>
       <div class="zoom-controls">
         <button id="zoomOut" title="Zoom out">−</button>
         <button id="zoomIn" title="Zoom in">+</button>
@@ -157,12 +167,44 @@ async function fetchGraph(signature = '') {
   }
 }
 
+
+function updateProgressUI(status) {
+  const bar = document.getElementById('progressBar');
+  const label = document.getElementById('progressLabel');
+  const stage = status.stage || 'idle';
+  const total = Number(status.progress_total || 0);
+  const current = Number(status.progress_current || 0);
+
+  if (status.running && total > 0) {
+    const pct = Math.max(0, Math.min(100, (current / total) * 100));
+    bar.value = pct;
+    label.textContent = `${stage} ${current}/${total} (${pct.toFixed(0)}%)`;
+    return;
+  }
+
+  if (status.running) {
+    bar.value = 100;
+    label.textContent = `${stage}...`;
+    return;
+  }
+
+  if (stage === 'done') {
+    bar.value = 100;
+    label.textContent = 'Done';
+    return;
+  }
+
+  bar.value = 0;
+  label.textContent = 'Idle';
+}
+
 async function pollStatus() {
   const r = await fetch('/api/status');
   const s = await r.json();
   activeModel = s.active_model || activeModel;
   const watchInfo = s.watcher_enabled ? ` watch:${s.dirty_flag ? 'dirty' : 'clean'}` : ' watch:off';
   document.getElementById('status').textContent = `${activeModel} | ${s.stage} ${s.progress_current}/${s.progress_total} | imgs:${s.images} emb:${s.embeddings} edges:${s.edges}${watchInfo}`;
+  updateProgressUI(s);
   setControlsDisabled(!!s.running);
 
   if (s.running) {
