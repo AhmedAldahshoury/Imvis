@@ -22,6 +22,9 @@
   <div id="graph-wrap">
     <div id="toolbar">
       <button id="reindex">Reindex</button>
+      <label>Model <select id="modelSelect"></select></label>
+      <button id="applyModel">Apply & Reindex</button>
+      <span id="modelWarning" style="font-size:12px;color:#8a4b00;">Changing model rebuilds embeddings and graph.</span>
       <label>Min similarity <input id="threshold" type="range" min="0" max="1" step="0.01" value="0"/></label>
       <span id="thresholdValue">0.00</span>
       <input id="search" placeholder="Search filename" />
@@ -63,9 +66,36 @@ let simThreshold = 0;
 let lastLoadedGraphSignature = '';
 let isFetchingGraph = false;
 let wasRunning = false;
+let activeModel = '';
+let modelsLoaded = false;
+
+
+async function loadModels() {
+  const [modelsResp, configResp] = await Promise.all([fetch('/api/models'), fetch('/api/config')]);
+  const modelsPayload = await modelsResp.json();
+  const config = await configResp.json();
+  activeModel = config.active_model;
+  const select = document.getElementById('modelSelect');
+  select.innerHTML = '';
+  for (const m of modelsPayload.models) {
+    const opt = document.createElement('option');
+    opt.value = m.name;
+    opt.textContent = `${m.label} (${m.speed_hint})`;
+    opt.title = m.description;
+    if (m.name === activeModel) opt.selected = true;
+    select.appendChild(opt);
+  }
+  modelsLoaded = true;
+}
+
+function setControlsDisabled(disabled) {
+  document.getElementById('reindex').disabled = disabled;
+  document.getElementById('modelSelect').disabled = disabled;
+  document.getElementById('applyModel').disabled = disabled;
+}
 
 function graphSignatureFromStatus(status) {
-  return `${status.images}:${status.embeddings}:${status.edges}`;
+  return `${status.active_model}:${status.images}:${status.embeddings}:${status.edges}`;
 }
 
 function resetZoom(duration = 400) {
@@ -130,7 +160,10 @@ async function fetchGraph(signature = '') {
 async function pollStatus() {
   const r = await fetch('/api/status');
   const s = await r.json();
-  document.getElementById('status').textContent = `${s.stage} ${s.progress_current}/${s.progress_total} | imgs:${s.images} emb:${s.embeddings} edges:${s.edges}`;
+  activeModel = s.active_model || activeModel;
+  const watchInfo = s.watcher_enabled ? ` watch:${s.dirty_flag ? 'dirty' : 'clean'}` : ' watch:off';
+  document.getElementById('status').textContent = `${activeModel} | ${s.stage} ${s.progress_current}/${s.progress_total} | imgs:${s.images} emb:${s.embeddings} edges:${s.edges}${watchInfo}`;
+  setControlsDisabled(!!s.running);
 
   if (s.running) {
     wasRunning = true;
@@ -240,8 +273,14 @@ document.getElementById('search').addEventListener('input', e => {
 });
 
 document.getElementById('reindex').addEventListener('click', async () => {
-  await fetch('/api/reindex', {method:'POST'});
-  pollStatus();
+  await fetch('/api/reindex', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({full:false})});
+  loadModels().then(() => pollStatus());
+});
+
+document.getElementById('applyModel').addEventListener('click', async () => {
+  const selected = document.getElementById('modelSelect').value;
+  await fetch('/api/config', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({active_model:selected})});
+  loadModels().then(() => pollStatus());
 });
 
 document.getElementById('zoomIn').addEventListener('click', () => {
@@ -254,7 +293,7 @@ document.getElementById('zoomOut').addEventListener('click', () => {
 
 document.getElementById('zoomReset').addEventListener('click', () => resetZoom());
 
-pollStatus();
+loadModels().then(() => pollStatus());
 </script>
 </body>
 </html>
