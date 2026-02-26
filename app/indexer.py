@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -144,6 +145,52 @@ class Indexer:
             image.thumbnail((256, 256))
             image.save(out, format="JPEG", quality=85)
 
+    def _build_thumbnail(self, rec: _RowImage) -> str:
+        self._thumbnail(Path(rec.filepath), rec.id)
+        return rec.id
+
+    def _embed_vector(self, rec: _RowImage, model_name: str) -> tuple[str, np.ndarray]:
+        path = Path(rec.filepath)
+        vec = self.embedder.embed(path, model_name)
+        return rec.id, vec
+
+    def _run_parallel_jobs(self, records: list[_RowImage], stage: str, workers: int, job):
+        self._set(stage=stage, progress_total=len(records), progress_current=0)
+        if not records:
+            return []
+
+        throttle = self.settings.index_throttle_imgs_per_sec
+        submit_interval = (1.0 / throttle) if throttle > 0 else 0.0
+        next_submit_at = 0.0
+
+        results = []
+        completed = 0
+        pending = set()
+        submit_index = 0
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            while submit_index < len(records) or pending:
+                now = time.monotonic()
+                while submit_index < len(records) and len(pending) < workers and now >= next_submit_at:
+                    pending.add(pool.submit(job, records[submit_index]))
+                    submit_index += 1
+                    next_submit_at = now + submit_interval if submit_interval > 0 else now
+                    now = time.monotonic()
+
+                if not pending:
+                    sleep_for = max(0.001, next_submit_at - time.monotonic())
+                    time.sleep(sleep_for)
+                    continue
+
+                done, pending = wait(pending, timeout=0.1, return_when=FIRST_COMPLETED)
+                for future in done:
+                    results.append(future.result())
+                    completed += 1
+                    self._set(progress_current=completed)
+
+        return results
+
+
     def _run_loop(self) -> None:
         while True:
             with self._lock:
@@ -193,14 +240,12 @@ class Indexer:
                     self.db.delete_images_by_paths([rec.filepath])
         self.db.upsert_images(records)
 
-        self._set(
-            stage="thumbs", progress_total=len(changed_records), progress_current=0
+        self._run_parallel_jobs(
+            records=changed_records,
+            stage="thumbs",
+            workers=self.settings.thumbnail_workers,
+            job=self._build_thumbnail,
         )
-        for i, rec in enumerate(changed_records, start=1):
-            self._thumbnail(Path(rec.filepath), rec.id)
-            self._set(progress_current=i)
-            if self.settings.index_throttle_imgs_per_sec > 0:
-                time.sleep(1 / self.settings.index_throttle_imgs_per_sec)
 
         if full:
             embedding_rows = records
@@ -213,18 +258,16 @@ class Indexer:
                 if row["filepath"] not in changed_paths
             ]
 
-        self._set(
-            stage="embeddings", progress_total=len(embedding_rows), progress_current=0
+        embedding_results = self._run_parallel_jobs(
+            records=embedding_rows,
+            stage="embeddings",
+            workers=self.settings.embedding_workers,
+            job=lambda rec: self._embed_vector(rec, target_model),
         )
-        for i, rec in enumerate(embedding_rows, start=1):
-            path = Path(rec.filepath)
-            vec = self.embedder.embed(path, target_model)
+        for image_id, vec in embedding_results:
             self.db.save_embedding(
-                rec.id, target_model, vec.astype(np.float32).tobytes(), vec.shape[0]
+                image_id, target_model, vec.astype(np.float32).tobytes(), vec.shape[0]
             )
-            self._set(progress_current=i)
-            if self.settings.index_throttle_imgs_per_sec > 0:
-                time.sleep(1 / self.settings.index_throttle_imgs_per_sec)
         self.db.conn.commit()
 
         rows = self.db.get_embedding_rows(target_model)

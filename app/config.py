@@ -20,6 +20,8 @@ class Settings:
     index_throttle_imgs_per_sec: float = float(
         os.getenv("INDEX_THROTTLE_IMGS_PER_SEC", "2")
     )
+    thumbnail_workers: int = max(1, int(os.getenv("THUMBNAIL_WORKERS", "4")))
+    embedding_workers: int = max(1, int(os.getenv("EMBEDDING_WORKERS", "4")))
     default_active_model: str = os.getenv("ACTIVE_MODEL", "clip_b32")
 
 

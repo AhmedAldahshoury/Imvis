@@ -68,6 +68,8 @@ uvicorn app.main:app --reload
 - `WATCH_ENABLED` (default `true`)
 - `WATCH_DEBOUNCE_SECONDS` (default `20`)
 - `INDEX_THROTTLE_IMGS_PER_SEC` (default `2`)
+- `THUMBNAIL_WORKERS` (default `4`)
+- `EMBEDDING_WORKERS` (default `4`)
 
 ### New API endpoints
 - `GET /api/models`
